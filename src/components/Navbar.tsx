@@ -1,28 +1,52 @@
-import {Link} from 'react-router-dom';
+import { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 
 function Navbar() {
-    return (
-        <nav>
-            <div className="mx-auto max-w-6x1 items-center justify-between p-4">
-                <Link to="/" className="text-2xl font-bold text-gray-800">
-                    Online Quiz
-                </Link>
-            </div>
-            <div className="flex items-center space-x-4">
-                <Link to="/Quizzes" className="text-gray-800 hover:text-gray-600">
-                    Quizzes
-                </Link>
-                <Link to="/my-results" className="text-gray-800 hover:text-gray-600">
-                    My Results
-                </Link>
-                <Link to="/login" className="text-gray-800 hover:text-gray-600">
-                    Login   
-                </Link>
-                <Link to="/signup" className="text-gray-800 hover:text-gray-600">
-                    Signup
-                </Link>
-            </div>
-        </nav>
-    );
+  const navigate = useNavigate();
+  const [loggedIn, setLoggedIn] = useState(true);
+
+  async function handleLogout() {
+    await fetch('http://localhost:5000/api/auth/logout', {
+      method: 'POST',
+      credentials: 'include',
+    });
+
+    setLoggedIn(false);
+    navigate('/login');
+  }
+
+  return (
+    <nav className="border-b bg-white">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+        <Link to="/" className="text-lg font-semibold">
+          Quiz System
+        </Link>
+
+        <div className="flex items-center gap-4">
+          <Link to="/">Quizzes</Link>
+
+          <Link to="/my-results">
+            My Results
+          </Link>
+
+          {loggedIn ? (
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="text-sm font-medium"
+            >
+              Logout
+            </button>
+          ) : (
+            <>
+              <Link to="/login">Login</Link>
+              <Link to="/signup">Sign Up</Link>
+            </>
+          )}
+        </div>
+      </div>
+    </nav>
+  );
 }
+
 export default Navbar;
