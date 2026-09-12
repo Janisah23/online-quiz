@@ -1,3 +1,4 @@
+
 import { useQuery } from '@tanstack/react-query';
 
 import {
@@ -16,6 +17,7 @@ function MyResultsPage() {
     data: results = [],
     isLoading,
     isError,
+    error,
   } = useQuery({
     queryKey: ['my-results'],
     queryFn: getMyResults,
@@ -27,9 +29,19 @@ function MyResultsPage() {
 
   if (isError) {
     return (
-      <p className="text-red-600">
-        Please log in to view your results.
-      </p>
+      <Card>
+        <CardContent className="pt-6">
+          <p className="text-red-600">
+            Unable to load your results.
+          </p>
+
+          <p className="mt-2 text-sm text-muted-foreground">
+            {error instanceof Error
+              ? error.message
+              : 'Please log in again.'}
+          </p>
+        </CardContent>
+      </Card>
     );
   }
 
@@ -37,6 +49,7 @@ function MyResultsPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold">My Results</h1>
+
         <p className="mt-2 text-muted-foreground">
           View your previous quiz attempts.
         </p>

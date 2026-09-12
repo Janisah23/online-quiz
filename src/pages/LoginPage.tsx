@@ -56,22 +56,25 @@ function LoginPage() {
   }
 
   return (
-    <div className="mx-auto max-w-md">
-      <Card>
-        <CardHeader>
-          <CardTitle>Login</CardTitle>
-          <CardDescription>
-            Login to access the quiz system.
+    <div className="mx-auto w-full max-w-md pt-12 px-4 sm:pt-24">
+      <Card className="shadow-sm">
+        <CardHeader className="space-y-1.5 text-center pb-6">
+          <CardTitle className="text-2xl font-semibold tracking-tight">
+            Login
+          </CardTitle>
+          <CardDescription className="text-sm">
+            Enter your credentials to access the quiz system.
           </CardDescription>
         </CardHeader>
 
         <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-5">
             <Input
               type="email"
-              placeholder="Email"
+              placeholder="name@example.com"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
+              className="h-10 transition-colors focus-visible:ring-1"
               required
             />
 
@@ -80,22 +83,26 @@ function LoginPage() {
               placeholder="Password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
+              className="h-10 transition-colors focus-visible:ring-1"
               required
             />
 
             {message && (
-              <p className="text-sm text-red-600">
+              <p className="rounded-md bg-destructive/10 p-3 text-[13px] font-medium text-destructive">
                 {message}
               </p>
             )}
 
-            <Button type="submit" className="w-full" disabled={loading}>
+            <Button type="submit" className="h-10 w-full font-medium" disabled={loading}>
               {loading ? 'Logging in...' : 'Login'}
             </Button>
 
-            <p className="text-center text-sm text-muted-foreground">
+            <p className="pt-2 text-center text-sm text-muted-foreground">
               Don't have an account?{' '}
-              <Link to="/signup" className="font-medium underline">
+              <Link
+                to="/signup"
+                className="font-semibold text-primary underline-offset-4 hover:underline"
+              >
                 Sign Up
               </Link>
             </p>

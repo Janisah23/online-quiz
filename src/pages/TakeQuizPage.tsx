@@ -11,7 +11,10 @@ import {
 } from '../components/ui/card';
 
 import { Button } from '../components/ui/button';
-import { RadioGroup, RadioGroupItem } from '../components/ui/radio-group';
+import {
+  RadioGroup,
+  RadioGroupItem,
+} from '../components/ui/radio-group';
 
 import {
   getQuiz,
@@ -68,20 +71,29 @@ function TakeQuizPage() {
         );
       }
 
-      return [...currentAnswers, { questionId, choiceId }];
+      return [
+        ...currentAnswers,
+        {
+          questionId,
+          choiceId,
+        },
+      ];
     });
   }
 
   function getSelectedAnswer(questionId: number) {
-    return answers.find(
-      (answer) => answer.questionId === questionId,
-    )?.choiceId.toString();
+    return answers
+      .find((answer) => answer.questionId === questionId)
+      ?.choiceId.toString();
   }
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <div>
-        <h1 className="text-3xl font-bold">{quiz.title}</h1>
+        <h1 className="text-3xl font-bold">
+          {quiz.title}
+        </h1>
+
         <p className="mt-2 text-muted-foreground">
           {quiz.description}
         </p>
@@ -101,9 +113,12 @@ function TakeQuizPage() {
 
           <CardContent>
             <RadioGroup
-              value={getSelectedAnswer(question.id)}
+              value={getSelectedAnswer(question.id) ?? ''}
               onValueChange={(value) =>
-                handleAnswer(question.id, Number(value))
+                handleAnswer(
+                  question.id,
+                  Number(value),
+                )
               }
             >
               {question.choices.map((choice) => (

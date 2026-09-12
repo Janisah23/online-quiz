@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { Link, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 
 import {
   Card,
@@ -14,6 +14,7 @@ import { getResult } from '../api/quizApi';
 
 function ResultPage() {
   const { id } = useParams();
+  const navigate = useNavigate();
 
   const {
     data: result,
@@ -55,7 +56,9 @@ function ResultPage() {
             </p>
 
             <div className="mt-3">
-              <Badge variant={result.passed ? 'default' : 'destructive'}>
+              <Badge
+                variant={result.passed ? 'default' : 'destructive'}
+              >
                 {result.passed ? 'Passed' : 'Failed'}
               </Badge>
             </div>
@@ -66,19 +69,22 @@ function ResultPage() {
           </p>
 
           <div className="flex justify-center gap-3">
-<Link
-  to="/"
-  className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
->
-  Back to Quizzes
-</Link>
+            <button
+              type="button"
+              onClick={() => navigate('/')}
+              className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
+            >
+              Back to Quizzes
+            </button>
 
-<Link
-  to="/my-results"
-  className="inline-flex h-10 items-center justify-center rounded-md border px-4 py-2 text-sm font-medium"
->
-  My Results
-</Link>          </div>
+            <button
+              type="button"
+              onClick={() => navigate('/my-results')}
+              className="inline-flex h-10 items-center justify-center rounded-md border px-4 py-2 text-sm font-medium"
+            >
+              My Results
+            </button>
+          </div>
         </CardContent>
       </Card>
     </div>
