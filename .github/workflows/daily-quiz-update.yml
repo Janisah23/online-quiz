@@ -1,0 +1,193 @@
+name: Daily AI Online Quiz Improvement
+
+on:
+  schedule:
+    # Runs every day at 5:00 PM Philippines time (09:00 UTC)
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  improve-online-quiz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare AI branch
+        run: |
+          git fetch origin ai-daily-updates || true
+          if git show-ref --verify --quiet refs/remotes/origin/ai-daily-updates; then
+            git checkout -B ai-daily-updates origin/ai-daily-updates
+          else
+            git checkout -b ai-daily-updates
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Generate and validate an improvement
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          cat > /tmp/daily_ai.py <<'PY'
+          import os, json, subprocess, urllib.request, urllib.error
+          from pathlib import Path
+
+          def run(args, check=True):
+              return subprocess.run(
+                  args, check=check, text=True, capture_output=True
+              )
+
+          # Read a limited set of tracked project files.
+          names = run(["git", "ls-files"]).stdout.splitlines()
+          allowed = (".js", ".jsx", ".ts", ".tsx", ".css",
+                     ".html", ".json", ".md")
+          ignored = ("package-lock.json", "yarn.lock", "pnpm-lock.yaml")
+
+          files = []
+          total = 0
+          for name in names:
+              p = Path(name)
+              if (not name.endswith(allowed)
+                  or any(x in name for x in ignored)
+                  or any(x in p.parts for x in
+                         ["node_modules", "dist", "build", ".git"])
+                  or p.name.startswith(".env")):
+                  continue
+              try:
+                  content = p.read_text(encoding="utf-8")
+              except (UnicodeError, OSError):
+                  continue
+              if len(content) > 6000:
+                  content = content[:6000]
+              if total + len(content) > 24000:
+                  break
+              files.append(f"\n--- FILE: {name} ---\n{content}")
+              total += len(content)
+
+          if not files:
+              raise SystemExit("No suitable project files found.")
+
+          prompt = """
+          You are improving a student-built online quiz application.
+          Make ONE small, useful, safe improvement consistent with the
+          existing project and design.
+
+          Prioritize:
+          - Quiz question display and answer selection
+          - Score calculation and result accuracy
+          - Clear feedback after submitting answers
+          - Navigation between questions
+          - Responsive layout on desktop and mobile
+          - Accessibility, readability, and usability
+          - Fixing a clear bug or improving maintainability
+
+          Respect the existing framework, coding style, and functionality.
+          Do not invent features requiring unavailable services.
+          Do not change dependencies, lockfiles, secrets, deployment settings,
+          or GitHub workflows. Never remove existing functionality.
+          Do not expose answers before the quiz rules allow it.
+          If there is no clearly worthwhile improvement, return NO_CHANGE.
+
+          Otherwise return ONLY a valid unified git diff with
+          standard 'diff --git' headers. Use existing files only.
+          Do not use Markdown fences or explain the patch.
+
+          PROJECT FILES:
+          """ + "".join(files)
+
+          key = os.environ["GEMINI_API_KEY"]
+          url = (
+              "https://generativelanguage.googleapis.com/v1beta/models/"
+              "gemini-2.5-flash:generateContent?key=" + key
+          )
+          body = {
+              "contents": [{"parts": [{"text": prompt}]}],
+              "generationConfig": {
+                  "temperature": 0.2,
+                  "maxOutputTokens": 6000
+              }
+          }
+          req = urllib.request.Request(
+              url, data=json.dumps(body).encode(),
+              headers={"Content-Type": "application/json"},
+              method="POST"
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=90) as response:
+                  result = json.loads(response.read())
+          except urllib.error.HTTPError as e:
+              raise SystemExit(
+                  f"Gemini API request failed with HTTP {e.code}. "
+                  "Check the API key and free-tier quota."
+              )
+
+          candidates = result.get("candidates", [])
+          if not candidates:
+              raise SystemExit("Gemini returned no usable response.")
+          patch = "".join(
+              part.get("text", "")
+              for part in candidates[0]["content"]["parts"]
+          ).strip()
+
+          if patch == "NO_CHANGE":
+              print("No worthwhile change today.")
+              raise SystemExit(0)
+
+          if patch.startswith("```"):
+              raise SystemExit("Unexpected fenced output; refusing to apply.")
+
+          # Refuse new files, deletions, renames, and workflow edits.
+          if not patch.startswith("diff --git "):
+              raise SystemExit("Response is not a valid git diff.")
+          for line in patch.splitlines():
+              if line.startswith(("+++ ", "--- ")):
+                  path = line[4:].split("\t")[0]
+                  if path == "/dev/null" or path.startswith("/"):
+                      raise SystemExit("Refusing file creation or deletion.")
+                  if path.startswith("b/"):
+                      path = path[2:]
+                  if path.startswith(".github/workflows/"):
+                      raise SystemExit("Refusing workflow edits.")
+
+          Path("/tmp/change.patch").write_text(patch + "\n")
+          run(["git", "apply", "--check", "/tmp/change.patch"])
+          run(["git", "apply", "/tmp/change.patch"])
+
+          # Test the project before committing.
+          if Path("package.json").exists():
+              pkg = json.loads(Path("package.json").read_text())
+              scripts = pkg.get("scripts", {})
+              if Path("package-lock.json").exists():
+                  run(["npm", "ci"])
+              else:
+                  run(["npm", "install", "--ignore-scripts"])
+              if "build" in scripts:
+                  run(["npm", "run", "build"])
+              if "test" in scripts:
+                  run(["npm", "test", "--", "--run"])
+
+          if not run(["git", "diff", "--quiet"], check=False).returncode:
+              print("No changes to commit.")
+              raise SystemExit(0)
+
+          run(["git", "config", "user.name", "github-actions[bot]"])
+          run(["git", "config", "user.email",
+               "41898282+github-actions[bot]@users.noreply.github.com"])
+          run(["git", "add", "-u"])
+          run(["git", "commit", "-m",
+               "chore: daily AI online quiz improvement"])
+          run(["git", "push", "origin", "ai-daily-updates"])
+          print("Improvement tested and pushed successfully.")
+          PY
+
+          python /tmp/daily_ai.py
