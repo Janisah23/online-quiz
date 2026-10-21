@@ -1,3 +1,4 @@
+
 name: Daily AI Online Quiz Improvement
 
 on:
@@ -53,7 +54,7 @@ jobs:
 
           cat > /tmp/daily-ai.mjs <<'JS'
           import fs from "node:fs";
-          import { execFileSync, spawnSync } from "node:child_process";
+          import { spawnSync } from "node:child_process";
 
           const apiKey = process.env.GEMINI_API_KEY;
 
@@ -114,6 +115,7 @@ jobs:
             if (content.includes("\0")) continue;
 
             const chunk = `\n\n--- FILE: ${file} ---\n${content}`;
+
             if (totalChars + chunk.length > maxChars) continue;
 
             chunks.push(chunk);
@@ -211,7 +213,7 @@ jobs:
 
             if (!response.ok) {
               throw new Error(
-                `HTTP ${response.status}: ${
+                `Gemini API HTTP ${response.status}: ${
                   data.error?.message || JSON.stringify(data)
                 }`
               );
@@ -233,8 +235,6 @@ jobs:
 
           const availableModels = await listAvailableModels();
 
-          // Prefer the model recommended by the current API error.
-          // If it is unavailable to this key, choose another listed Flash model.
           const preferredModels = [
             "gemini-3.8-flash",
             "gemini-3.7-flash",
@@ -243,7 +243,9 @@ jobs:
           ];
 
           const model = [
-            ...preferredModels.filter(name => availableModels.includes(name)),
+            ...preferredModels.filter(name =>
+              availableModels.includes(name)
+            ),
             ...availableModels
               .filter(name =>
                 /flash/i.test(name) &&
@@ -254,70 +256,82 @@ jobs:
 
           if (!model) {
             throw new Error(
-              "No available Flash model supporting generateContent was found for this API key. Check the Gemini API models list and your API access."
+              "No available Flash model supporting generateContent was found for this API key."
             );
           }
 
           console.log(`Using available Gemini model: ${model}`);
 
           const generated = await generate(model);
+          const responseText = generated.trim();
 
-          if (generated === "NO_CHANGE") {
+          if (/^NO_CHANGE[.!]?$/i.test(responseText)) {
             console.log("AI found no safe improvement. Nothing to commit.");
             process.exit(0);
           }
 
-          const patch = generated
-            .replace(/^```(?:diff)?\s*/i, "")
-            .replace(/\s*```$/, "")
+          // Remove Markdown fences if Gemini includes them.
+          let patch = responseText
+            .replace(/^```(?:diff|patch|text)?[ \t]*\r?\n/i, "")
+            .replace(/\r?\n```[ \t]*$/, "")
             .trim();
 
-          if (!patch.startsWith("--- a/") ||
-              !patch.includes("\n+++ b/")) {
-            throw new Error(
-              "Gemini did not return a valid unified diff. No changes applied."
+          // Extract a diff if Gemini includes explanatory text first.
+          const diffStart = patch.search(
+            /^(?:diff --git a\/|--- a\/)/m
+          );
+
+          if (diffStart >= 0) {
+            patch = patch.slice(diffStart).trim();
+          }
+
+          // Do not fail the entire run if Gemini returns prose instead.
+          if (
+            !patch.startsWith("--- a/") ||
+            !/^\+\+\+ b\//m.test(patch)
+          ) {
+            console.log(
+              "Gemini did not return a usable unified diff. No changes were applied."
             );
+            console.log("Response preview:");
+            console.log(responseText.slice(0, 1500));
+            process.exit(0);
           }
 
           const allowedFiles = new Set(sourceFiles);
-          const diffHeaders = patch.split("\n").filter(line =>
-            line.startsWith("diff --git ")
-          );
+          const patchLines = patch.split(/\r?\n/);
 
-          if (diffHeaders.length === 0) {
-            throw new Error("The generated diff contains no file changes.");
-          }
+          // Validate that every file in the patch is allowed.
+          for (const line of patchLines) {
+            if (!line.startsWith("--- ") && !line.startsWith("+++ ")) {
+              continue;
+            }
 
-          for (const line of patch.split("\n")) {
-            if (line.startsWith("--- ") || line.startsWith("+++ ")) {
-              const match = line.match(/^(?:---|\+\+\+) ([^\t ]+)/);
-              if (!match) {
-                throw new Error("Invalid file header in generated diff.");
-              }
+            const match = line.match(/^(?:---|\+\+\+) ([^\t ]+)/);
 
-              const file = match[1];
+            if (!match) {
+              throw new Error("Invalid file header in generated diff.");
+            }
 
-              if (file === "/dev/null") {
-                throw new Error(
-                  "New files and deleted files are not allowed."
-                );
-              }
+            const file = match[1];
 
-              const path = file.slice(2);
+            if (file === "/dev/null") {
+              throw new Error(
+                "Adding or deleting files is not allowed."
+              );
+            }
 
-              if (!allowedFiles.has(path)) {
-                throw new Error(
-                  `AI attempted to change an unapproved file: ${path}`
-                );
-              }
+            const path = file.slice(2);
 
-              if (
-                path.startsWith("/") ||
-                path.split("/").includes("..") ||
-                path.startsWith(".github/")
-              ) {
-                throw new Error(`Unsafe file path: ${path}`);
-              }
+            if (
+              path.startsWith("/") ||
+              path.split("/").includes("..") ||
+              path.startsWith(".github/") ||
+              !allowedFiles.has(path)
+            ) {
+              throw new Error(
+                `AI attempted to change an unapproved file: ${path}`
+              );
             }
           }
 
@@ -331,17 +345,16 @@ jobs:
           );
 
           if (check.status !== 0) {
-            throw new Error(
-              `Generated patch failed validation:\n${check.stderr || check.stdout}`
+            console.log("The generated patch could not be applied safely.");
+            console.log(
+              check.stderr || check.stdout || "No additional details."
             );
+            process.exit(0);
           }
 
           git(["apply", patchPath]);
 
-          const changedFiles = git([
-            "diff",
-            "--name-only"
-          ])
+          const changedFiles = git(["diff", "--name-only"])
             .split("\n")
             .filter(Boolean);
 
@@ -359,7 +372,9 @@ jobs:
           }
 
           console.log("AI improvement applied to:");
-          for (const file of changedFiles) console.log(`- ${file}`);
+          for (const file of changedFiles) {
+            console.log(`- ${file}`);
+          }
           JS
 
           node /tmp/daily-ai.mjs
@@ -374,9 +389,7 @@ jobs:
             exit 1
           fi
 
-          if [ -f package-lock.json ]; then
-            npm ci
-          elif [ -f npm-shrinkwrap.json ]; then
+          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
             npm ci
           else
             echo "No npm lockfile found; using npm install."
@@ -385,14 +398,17 @@ jobs:
 
           node --input-type=module <<'JS'
           import fs from "node:fs";
+          import { spawnSync } from "node:child_process";
 
-          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const pkg = JSON.parse(
+            fs.readFileSync("package.json", "utf8")
+          );
+
           const scripts = pkg.scripts || {};
 
           if (scripts.test) {
             const testScript = scripts.test;
-
-            let args = ["test"];
+            const args = ["test"];
 
             if (/vitest/.test(testScript)) {
               args.push("--", "--run");
@@ -400,7 +416,6 @@ jobs:
               args.push("--", "--watchAll=false");
             }
 
-            const { spawnSync } = await import("node:child_process");
             const result = spawnSync("npm", args, {
               stdio: "inherit",
               env: {
@@ -417,11 +432,14 @@ jobs:
           }
 
           if (scripts.build) {
-            const { spawnSync } = await import("node:child_process");
-            const result = spawnSync("npm", ["run", "build"], {
-              stdio: "inherit",
-              env: process.env
-            });
+            const result = spawnSync(
+              "npm",
+              ["run", "build"],
+              {
+                stdio: "inherit",
+                env: process.env
+              }
+            );
 
             if (result.status !== 0) {
               process.exit(result.status ?? 1);
@@ -445,10 +463,11 @@ jobs:
           fi
 
           git add -- '*.js' '*.jsx' '*.ts' '*.tsx' '*.css' '*.scss' '*.html' '*.md'
-          git diff --cached --quiet && {
+
+          if git diff --cached --quiet; then
             echo "No eligible source changes to commit."
             exit 0
-          }
+          fi
 
           git commit -m "chore: daily AI online quiz improvement"
           git push origin HEAD:ai-daily-updates
