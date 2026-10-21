@@ -2,12 +2,16 @@ name: Daily AI Online Quiz Improvement
 
 on:
   schedule:
-    # Runs every day at 5:00 PM Philippines time (09:00 UTC)
+    # Every day at 5:00 PM Philippines time (09:00 UTC)
     - cron: "0 9 * * *"
   workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: daily-ai-online-quiz
+  cancel-in-progress: false
 
 jobs:
   improve-online-quiz:
@@ -19,175 +23,462 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: main
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
 
       - name: Prepare AI branch
+        shell: bash
         run: |
+          git fetch origin main
           git fetch origin ai-daily-updates || true
+
           if git show-ref --verify --quiet refs/remotes/origin/ai-daily-updates; then
             git checkout -B ai-daily-updates origin/ai-daily-updates
           else
-            git checkout -b ai-daily-updates
+            git checkout -b ai-daily-updates origin/main
           fi
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Generate and validate an improvement
+      - name: Generate, validate, test, and push improvement
+        shell: bash
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: gemini-2.5-flash
+          CI: "true"
         run: |
-          cat > /tmp/daily_ai.py <<'PY'
-          import os, json, subprocess, urllib.request, urllib.error
-          from pathlib import Path
+          cat > /tmp/daily-ai.mjs <<'JS'
+          import fs from "node:fs";
+          import path from "node:path";
+          import { execFileSync, spawnSync } from "node:child_process";
 
-          def run(args, check=True):
-              return subprocess.run(
-                  args, check=check, text=True, capture_output=True
-              )
+          function run(program, args, options = {}) {
+            const result = spawnSync(program, args, {
+              encoding: "utf8",
+              ...options,
+            });
 
-          # Read a limited set of tracked project files.
-          names = run(["git", "ls-files"]).stdout.splitlines()
-          allowed = (".js", ".jsx", ".ts", ".tsx", ".css",
-                     ".html", ".json", ".md")
-          ignored = ("package-lock.json", "yarn.lock", "pnpm-lock.yaml")
+            if (result.error) throw result.error;
 
-          files = []
-          total = 0
-          for name in names:
-              p = Path(name)
-              if (not name.endswith(allowed)
-                  or any(x in name for x in ignored)
-                  or any(x in p.parts for x in
-                         ["node_modules", "dist", "build", ".git"])
-                  or p.name.startswith(".env")):
-                  continue
-              try:
-                  content = p.read_text(encoding="utf-8")
-              except (UnicodeError, OSError):
-                  continue
-              if len(content) > 6000:
-                  content = content[:6000]
-              if total + len(content) > 24000:
-                  break
-              files.append(f"\n--- FILE: {name} ---\n{content}")
-              total += len(content)
+            if (result.status !== 0) {
+              throw new Error(
+                `${program} ${args.join(" ")} failed.\n` +
+                `${result.stderr || result.stdout || ""}`
+              );
+            }
 
-          if not files:
-              raise SystemExit("No suitable project files found.")
+            return result.stdout ?? "";
+          }
 
-          prompt = """
+          function fail(message) {
+            console.error(message);
+            process.exit(1);
+          }
+
+          const apiKey = process.env.GEMINI_API_KEY;
+
+          if (!apiKey) {
+            fail("Missing GEMINI_API_KEY repository secret.");
+          }
+
+          const tracked = run("git", ["ls-files", "-z"])
+            .split("\0")
+            .filter(Boolean);
+
+          const extensions = new Set([
+            ".js", ".jsx", ".ts", ".tsx",
+            ".css", ".scss", ".html", ".json", ".md"
+          ]);
+
+          const ignoredDirs = new Set([
+            "node_modules", "dist", "build", ".git",
+            "coverage", ".next"
+          ]);
+
+          const ignoredFiles = new Set([
+            "package-lock.json", "yarn.lock",
+            "pnpm-lock.yaml", "bun.lock", "bun.lockb"
+          ]);
+
+          const projectFiles = [];
+          let totalChars = 0;
+
+          for (const file of tracked) {
+            const normalized = file.split(path.sep).join("/");
+            const base = path.posix.basename(normalized);
+            const ext = path.posix.extname(normalized).toLowerCase();
+
+            if (!extensions.has(ext)) continue;
+            if (normalized.startsWith(".github/workflows/")) continue;
+            if (normalized.split("/").some(part => ignoredDirs.has(part))) continue;
+            if (ignoredFiles.has(base) || base.startsWith(".env")) continue;
+
+            let content;
+
+            try {
+              content = fs.readFileSync(file, "utf8").slice(0, 5000);
+            } catch {
+              continue;
+            }
+
+            if (totalChars + content.length > 24000) break;
+
+            projectFiles.push(
+              `\n--- FILE: ${normalized} ---\n${content}`
+            );
+
+            totalChars += content.length;
+          }
+
+          if (projectFiles.length === 0) {
+            console.log("Tracked files:", tracked.slice(0, 100));
+            fail(
+              "No supported quiz source files found. Check that your " +
+              "TypeScript/React files are committed to ai-daily-updates " +
+              "or main."
+            );
+          }
+
+          const prompt = `
           You are improving a student-built online quiz application.
-          Make ONE small, useful, safe improvement consistent with the
-          existing project and design.
+
+          Make ONE small, useful improvement that fits the existing
+          project, TypeScript conventions, and design.
 
           Prioritize:
-          - Quiz question display and answer selection
-          - Score calculation and result accuracy
+          - Displaying quiz questions and selecting answers
+          - Correct scoring and result calculations
           - Clear feedback after submitting answers
-          - Navigation between questions
-          - Responsive layout on desktop and mobile
-          - Accessibility, readability, and usability
-          - Fixing a clear bug or improving maintainability
+          - Previous/next question navigation
+          - Progress indicators and unanswered questions
+          - Responsive layouts and accessibility
+          - Loading, empty, and error states
+          - Fixing clear bugs and improving maintainability
 
-          Respect the existing framework, coding style, and functionality.
-          Do not invent features requiring unavailable services.
-          Do not change dependencies, lockfiles, secrets, deployment settings,
-          or GitHub workflows. Never remove existing functionality.
-          Do not expose answers before the quiz rules allow it.
-          If there is no clearly worthwhile improvement, return NO_CHANGE.
+          RULES:
+          - Follow the existing framework and coding style.
+          - Preserve existing functionality.
+          - Do not reveal correct answers before the existing quiz rules allow.
+          - Do not invent backend services or APIs.
+          - Do not change dependencies, lockfiles, secrets, or workflows.
+          - Modify existing tracked files only.
+          - Do not create, delete, or rename files.
+          - Avoid unrelated refactoring.
+          - Return exactly NO_CHANGE if no worthwhile improvement exists.
 
-          Otherwise return ONLY a valid unified git diff with
-          standard 'diff --git' headers. Use existing files only.
-          Do not use Markdown fences or explain the patch.
+          Otherwise return ONLY a valid unified Git diff using standard
+          diff --git headers. No Markdown fences or explanations.
 
           PROJECT FILES:
-          """ + "".join(files)
+          ${projectFiles.join("")}
+          `;
 
-          key = os.environ["GEMINI_API_KEY"]
-          url = (
-              "https://generativelanguage.googleapis.com/v1beta/models/"
-              "gemini-2.5-flash:generateContent?key=" + key
-          )
-          body = {
-              "contents": [{"parts": [{"text": prompt}]}],
-              "generationConfig": {
-                  "temperature": 0.2,
-                  "maxOutputTokens": 6000
-              }
+          async function apiRequest(url, options = {}) {
+            const response = await fetch(url, {
+              ...options,
+              signal: AbortSignal.timeout(90000),
+            });
+
+            const text = await response.text();
+            let data;
+
+            try {
+              data = JSON.parse(text);
+            } catch {
+              data = {};
+            }
+
+            if (!response.ok) {
+              const message =
+                data.error?.message || text || response.statusText;
+
+              throw new Error(
+                `HTTP ${response.status}: ${message.slice(0, 1200)}`
+              );
+            }
+
+            return data;
           }
-          req = urllib.request.Request(
-              url, data=json.dumps(body).encode(),
-              headers={"Content-Type": "application/json"},
-              method="POST"
-          )
-          try:
-              with urllib.request.urlopen(req, timeout=90) as response:
-                  result = json.loads(response.read())
-          except urllib.error.HTTPError as e:
-              raise SystemExit(
-                  f"Gemini API request failed with HTTP {e.code}. "
-                  "Check the API key and free-tier quota."
-              )
 
-          candidates = result.get("candidates", [])
-          if not candidates:
-              raise SystemExit("Gemini returned no usable response.")
-          patch = "".join(
-              part.get("text", "")
-              for part in candidates[0]["content"]["parts"]
-          ).strip()
+          const baseUrl =
+            "https://generativelanguage.googleapis.com/v1beta";
 
-          if patch == "NO_CHANGE":
-              print("No worthwhile change today.")
-              raise SystemExit(0)
+          let model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+          let result;
 
-          if patch.startswith("```"):
-              raise SystemExit("Unexpected fenced output; refusing to apply.")
+          const requestBody = {
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: 0.2,
+              maxOutputTokens: 6000,
+            },
+          };
 
-          # Refuse new files, deletions, renames, and workflow edits.
-          if not patch.startswith("diff --git "):
-              raise SystemExit("Response is not a valid git diff.")
-          for line in patch.splitlines():
-              if line.startswith(("+++ ", "--- ")):
-                  path = line[4:].split("\t")[0]
-                  if path == "/dev/null" or path.startswith("/"):
-                      raise SystemExit("Refusing file creation or deletion.")
-                  if path.startswith("b/"):
-                      path = path[2:]
-                  if path.startswith(".github/workflows/"):
-                      raise SystemExit("Refusing workflow edits.")
+          try {
+            try {
+              result = await apiRequest(
+                `${baseUrl}/models/${encodeURIComponent(model)}:generateContent`,
+                {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": apiKey,
+                  },
+                  body: JSON.stringify(requestBody),
+                }
+              );
+            } catch (error) {
+              if (!String(error.message).includes("HTTP 404")) {
+                throw error;
+              }
 
-          Path("/tmp/change.patch").write_text(patch + "\n")
-          run(["git", "apply", "--check", "/tmp/change.patch"])
-          run(["git", "apply", "/tmp/change.patch"])
+              console.log(
+                `Model ${model} returned 404. Checking available models...`
+              );
 
-          # Test the project before committing.
-          if Path("package.json").exists():
-              pkg = json.loads(Path("package.json").read_text())
-              scripts = pkg.get("scripts", {})
-              if Path("package-lock.json").exists():
-                  run(["npm", "ci"])
-              else:
-                  run(["npm", "install", "--ignore-scripts"])
-              if "build" in scripts:
-                  run(["npm", "run", "build"])
-              if "test" in scripts:
-                  run(["npm", "test", "--", "--run"])
+              const listing = await apiRequest(
+                `${baseUrl}/models`,
+                {
+                  headers: { "x-goog-api-key": apiKey },
+                }
+              );
 
-          if not run(["git", "diff", "--quiet"], check=False).returncode:
-              print("No changes to commit.")
-              raise SystemExit(0)
+              const available = (listing.models || [])
+                .filter(item =>
+                  (item.supportedGenerationMethods || [])
+                    .includes("generateContent")
+                )
+                .map(item => item.name.replace(/^models\//, ""));
 
-          run(["git", "config", "user.name", "github-actions[bot]"])
-          run(["git", "config", "user.email",
-               "41898282+github-actions[bot]@users.noreply.github.com"])
-          run(["git", "add", "-u"])
-          run(["git", "commit", "-m",
-               "chore: daily AI online quiz improvement"])
-          run(["git", "push", "origin", "ai-daily-updates"])
-          print("Improvement tested and pushed successfully.")
-          PY
+              const preferences = [
+                "gemini-2.5-flash",
+                "gemini-flash-latest",
+                "gemini-2.0-flash",
+              ];
 
-          python /tmp/daily_ai.py
+              model =
+                preferences.find(name => available.includes(name)) ||
+                available.find(name => name.toLowerCase().includes("flash"));
+
+              if (!model) {
+                fail(
+                  "No available Gemini Flash model supports generateContent. " +
+                  "Check the API key, API access, and available models."
+                );
+              }
+
+              console.log(`Retrying with available model: ${model}`);
+
+              result = await apiRequest(
+                `${baseUrl}/models/${encodeURIComponent(model)}:generateContent`,
+                {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": apiKey,
+                  },
+                  body: JSON.stringify(requestBody),
+                }
+              );
+            }
+          } catch (error) {
+            fail(`Gemini API request failed: ${error.message}`);
+          }
+
+          const candidate = result.candidates?.[0];
+
+          if (!candidate) {
+            fail(
+              `Gemini returned no candidate. ${JSON.stringify(result.promptFeedback || {})}`
+            );
+          }
+
+          const patch = (candidate.content?.parts || [])
+            .map(part => part.text || "")
+            .join("")
+            .trim();
+
+          if (patch === "NO_CHANGE") {
+            console.log("No worthwhile improvement today.");
+            process.exit(0);
+          }
+
+          if (patch.startsWith("```") || !patch.startsWith("diff --git ")) {
+            fail("Gemini did not return a valid unified Git diff.");
+          }
+
+          const changedFiles = new Set();
+          const headers = patch.match(/^diff --git .*$/gm) || [];
+
+          if (!headers.length) {
+            fail("No Git diff headers found.");
+          }
+
+          for (const header of headers) {
+            const match = header.match(/^diff --git a\/(.+) b\/(.+)$/);
+
+            if (!match) fail(`Malformed diff header: ${header}`);
+
+            const [, oldPath, newPath] = match;
+
+            if (oldPath !== newPath) {
+              fail("File creation, deletion, and renames are prohibited.");
+            }
+
+            if (
+              path.posix.isAbsolute(newPath) ||
+              newPath.split("/").includes("..") ||
+              newPath.startsWith(".github/workflows/")
+            ) {
+              fail(`Unsafe file path: ${newPath}`);
+            }
+
+            if (!tracked.includes(newPath)) {
+              fail(`File is not already tracked: ${newPath}`);
+            }
+
+            if (
+              newPath === "package.json" ||
+              newPath === "package-lock.json" ||
+              newPath === "yarn.lock" ||
+              newPath === "pnpm-lock.yaml" ||
+              newPath.startsWith(".env")
+            ) {
+              fail(`Protected file: ${newPath}`);
+            }
+
+            changedFiles.add(newPath);
+          }
+
+          for (const line of patch.split("\n")) {
+            if (
+              line.startsWith("new file mode ") ||
+              line.startsWith("deleted file mode ") ||
+              line.startsWith("rename from ") ||
+              line.startsWith("rename to ") ||
+              line.startsWith("copy from ") ||
+              line.startsWith("copy to ")
+            ) {
+              fail("File creation, deletion, and renames are prohibited.");
+            }
+
+            if (
+              (line.startsWith("--- ") || line.startsWith("+++ ")) &&
+              line.slice(4).split("\t")[0] === "/dev/null"
+            ) {
+              fail("File creation and deletion are prohibited.");
+            }
+          }
+
+          const patchPath = "/tmp/online-quiz.patch";
+
+          fs.writeFileSync(patchPath, patch + "\n", "utf8");
+
+          run("git", ["apply", "--check", patchPath]);
+          run("git", ["apply", "--", patchPath]);
+
+          const actualChanges = run("git", [
+            "diff", "--name-only"
+          ]).trim().split("\n").filter(Boolean);
+
+          for (const file of actualChanges) {
+            if (!changedFiles.has(file)) {
+              fail(`Unexpected changed file: ${file}`);
+            }
+          }
+
+          if (actualChanges.length === 0) {
+            console.log("No changes to commit.");
+            process.exit(0);
+          }
+
+          if (fs.existsSync("package.json")) {
+            const pkg = JSON.parse(
+              fs.readFileSync("package.json", "utf8")
+            );
+
+            if (fs.existsSync("package-lock.json")) {
+              run("npm", ["ci"], {
+                env: { ...process.env, CI: "true" },
+                stdio: "inherit",
+              });
+            } else {
+              fail(
+                "package-lock.json is missing. Commit your npm lockfile " +
+                "to allow reproducible automated builds."
+              );
+            }
+
+            const scripts = pkg.scripts || {};
+
+            if (scripts.test) {
+              if (scripts.test.includes("vitest")) {
+                run("npm", ["test", "--", "--run"], {
+                  env: { ...process.env, CI: "true" },
+                  stdio: "inherit",
+                });
+              } else if (scripts.test.includes("react-scripts")) {
+                run("npm", ["test", "--", "--watchAll=false"], {
+                  env: { ...process.env, CI: "true" },
+                  stdio: "inherit",
+                });
+              } else {
+                run("npm", ["test"], {
+                  env: { ...process.env, CI: "true" },
+                  stdio: "inherit",
+                });
+              }
+            }
+
+            if (scripts.build) {
+              run("npm", ["run", "build"], {
+                env: { ...process.env, CI: "true" },
+                stdio: "inherit",
+              });
+            }
+          } else {
+            fail("package.json not found; cannot validate the quiz project.");
+          }
+
+          run("git", [
+            "config", "user.name", "github-actions[bot]"
+          ]);
+
+          run("git", [
+            "config", "user.email",
+            "41898282+github-actions[bot]@users.noreply.github.com"
+          ]);
+
+          run("git", ["add", "--", ...actualChanges]);
+
+          const staged = spawnSync(
+            "git", ["diff", "--cached", "--quiet"],
+            { stdio: "ignore" }
+          );
+
+          if (staged.status === 0) {
+            console.log("No staged changes to commit.");
+            process.exit(0);
+          }
+
+          if (staged.status !== 1) {
+            fail("Unable to inspect staged changes.");
+          }
+
+          run("git", [
+            "commit", "-m",
+            "chore: daily AI online quiz improvement"
+          ]);
+
+          run("git", [
+            "push", "origin", "HEAD:ai-daily-updates"
+          ]);
+
+          console.log(
+            `Online quiz improvement tested and pushed using ${model}.`
+          );
+          JS
+
+          node /tmp/daily-ai.mjs
