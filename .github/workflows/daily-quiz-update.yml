@@ -17,7 +17,7 @@ concurrency:
 jobs:
   improve-online-quiz:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
@@ -31,7 +31,82 @@ jobs:
           node-version: "22"
           cache: npm
 
+
+      - name: Check start date and weekly rest day
+        id: rest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          const getManilaDate = () => {
+            const parts = new Intl.DateTimeFormat("en-CA", {
+              timeZone: "Asia/Manila",
+              year: "numeric",
+              month: "2-digit",
+              day: "2-digit"
+            }).formatToParts(new Date());
+
+            const values = Object.fromEntries(
+              parts.map(part => [part.type, part.value])
+            );
+
+            return `${values.year}-${values.month}-${values.day}`;
+          };
+
+          // First eligible review/commit date.
+          const START_DATE = "2026-06-17";
+
+          // Monday of the week containing June 17, 2026.
+          const ROTATION_ANCHOR = "2026-06-15";
+
+          const date = getManilaDate();
+          const today = new Date(`${date}T00:00:00Z`);
+          const startDate = new Date(`${START_DATE}T00:00:00Z`);
+          const anchor = new Date(`${ROTATION_ANCHOR}T00:00:00Z`);
+
+          const days = [
+            "Monday", "Tuesday", "Wednesday", "Thursday",
+            "Friday", "Saturday", "Sunday"
+          ];
+
+          let skip = false;
+
+          console.log(`Philippines date: ${date}`);
+          console.log(`First eligible date: ${START_DATE}`);
+
+          if (today < startDate) {
+            console.log("The workflow has not reached its start date.");
+            skip = true;
+          } else {
+            const weekIndex = Math.floor(
+              (today - anchor) / (7 * 24 * 60 * 60 * 1000)
+            );
+
+            const weekday = (today.getUTCDay() + 6) % 7;
+            const restDay = ((weekIndex % 7) + 7) % 7;
+
+            console.log(`Rotation week: ${weekIndex + 1}`);
+            console.log(`Weekly rest day: ${days[restDay]}`);
+
+            if (weekday === restDay) {
+              console.log("Weekly rest day: skipping AI improvement and commit.");
+              skip = true;
+            } else {
+              console.log("Scheduled improvement day.");
+            }
+          }
+
+          fs.appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            `skip=${skip}\n`
+          );
+          NODE
+
       - name: Prepare AI update branch
+        if: steps.rest.outputs.skip != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -46,6 +121,7 @@ jobs:
           fi
 
       - name: Generate and apply AI improvement
+        if: steps.rest.outputs.skip != 'true'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         shell: bash
@@ -158,8 +234,64 @@ jobs:
           ${chunks.join("")}
           `;
 
+          async function fetchWithRetry(url, options = {}, retries = 4) {
+            let lastError;
+
+            for (let attempt = 0; attempt <= retries; attempt++) {
+              try {
+                const response = await fetch(url, {
+                  ...options,
+                  signal: AbortSignal.timeout(60000)
+                });
+
+                const data = await response.json().catch(() => ({}));
+
+                if (response.status === 404) {
+                  return { unavailable: true, data };
+                }
+
+                if (!response.ok) {
+                  const error = new Error(
+                    `Gemini API HTTP ${response.status}: ${
+                      data.error?.message || JSON.stringify(data)
+                    }`
+                  );
+
+                  error.status = response.status;
+                  throw error;
+                }
+
+                return { data };
+              } catch (error) {
+                lastError = error;
+
+                const retryable =
+                  !error.status ||
+                  [408, 429, 500, 502, 503, 504].includes(error.status);
+
+                if (!retryable || attempt === retries) {
+                  break;
+                }
+
+                const delay = Math.min(5000 * (2 ** attempt), 60000);
+                const jitter = Math.floor(Math.random() * 2000);
+
+                console.log(`Request failed: ${error.message}`);
+                console.log(
+                  `Retry ${attempt + 1}/${retries} in ${delay + jitter} ms.`
+                );
+
+                await new Promise(resolve =>
+                  setTimeout(resolve, delay + jitter)
+                );
+              }
+            }
+
+            throw lastError || new Error("Gemini request failed.");
+          }
+
           async function listAvailableModels() {
-            const response = await fetch(
+            const result = await fetchWithRetry(
               "https://generativelanguage.googleapis.com/v1beta/models",
               {
                 headers: {
@@ -168,17 +300,7 @@ jobs:
               }
             );
 
-            const data = await response.json();
-
-            if (!response.ok) {
-              throw new Error(
-                `Gemini model-list request failed: HTTP ${response.status}: ${
-                  data.error?.message || JSON.stringify(data)
-                }`
-              );
-            }
-
-            return (data.models || [])
+            return (result.data.models || [])
               .filter(model =>
                 (model.supportedGenerationMethods || [])
                   .includes("generateContent")
@@ -187,7 +309,7 @@ jobs:
           }
 
           async function generate(model) {
-            const response = await fetch(
+            const result = await fetchWithRetry(
               `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
               {
                 method: "POST",
@@ -209,31 +331,32 @@ jobs:
               }
             );
 
-            const data = await response.json();
-
-            if (!response.ok) {
-              throw new Error(
-                `Gemini API HTTP ${response.status}: ${
-                  data.error?.message || JSON.stringify(data)
-                }`
-              );
+            if (result.unavailable) {
+              throw new Error(`${model} is unavailable (HTTP 404).`);
             }
 
-            const text = (data.candidates?.[0]?.content?.parts || [])
+            const generatedText = (
+              result.data.candidates?.[0]?.content?.parts || []
+            )
               .map(part => part.text || "")
               .join("")
               .trim();
 
-            if (!text) {
+            if (!generatedText) {
               throw new Error(
                 "Gemini returned no text. The response may have been blocked or truncated."
               );
             }
 
-            return text;
+            return generatedText;
           }
 
           const availableModels = await listAvailableModels();
+
+          const flashModels = availableModels.filter(name =>
+            /flash/i.test(name) &&
+            !/gemini-2\.5-flash/i.test(name)
+          );
 
           const preferredModels = [
             "gemini-3.8-flash",
@@ -242,27 +365,49 @@ jobs:
             "gemini-3-flash"
           ];
 
-          const model = [
+          const models = [
             ...preferredModels.filter(name =>
-              availableModels.includes(name)
+              flashModels.includes(name)
             ),
-            ...availableModels
-              .filter(name =>
-                /flash/i.test(name) &&
-                !preferredModels.includes(name)
-              )
+            ...flashModels
+              .filter(name => !preferredModels.includes(name))
               .sort()
-          ][0];
+          ];
 
-          if (!model) {
+          if (!models.length) {
             throw new Error(
               "No available Flash model supporting generateContent was found for this API key."
             );
           }
 
-          console.log(`Using available Gemini model: ${model}`);
+          console.log("Available Gemini Flash models:", models.join(", "));
 
-          const generated = await generate(model);
+          let generated = "";
+          let successfulModel = "";
+          const modelErrors = [];
+
+          for (const model of [...new Set(models)]) {
+            console.log(`Trying available Gemini model: ${model}`);
+
+            try {
+              generated = await generate(model);
+              successfulModel = model;
+              break;
+            } catch (error) {
+              console.error(`${model} failed: ${error.message}`);
+              modelErrors.push(`${model}: ${error.message}`);
+            }
+          }
+
+          if (!generated) {
+            throw new Error(
+              "All available Gemini Flash models failed:\n" +
+              modelErrors.join("\n")
+            );
+          }
+
+          console.log(`Successfully generated using ${successfulModel}.`);
+
           const responseText = generated.trim();
 
           if (/^NO_CHANGE[.!]?$/i.test(responseText)) {
@@ -380,6 +525,7 @@ jobs:
           node /tmp/daily-ai.mjs
 
       - name: Install dependencies and validate project
+        if: steps.rest.outputs.skip != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -450,6 +596,7 @@ jobs:
           JS
 
       - name: Commit and push improvement
+        if: steps.rest.outputs.skip != 'true'
         shell: bash
         run: |
           set -euo pipefail
