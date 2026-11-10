@@ -104,7 +104,7 @@ const quizzes = [
     ],
 },
         {
-            title: 'Which CSS property is used to change the background color of an element?',
+            title: 'CSS Properties',
             description: 'Test your knowledge of CSS properties.',
             questions: [
                 {
@@ -155,7 +155,7 @@ const quizzes = [
     ],
 },
         {
-            title: 'Which HTML tag is used to define a table header cell?',
+            title: 'HTML & CSS Mastery',
             description: 'Test your knowledge of HTML and CSS fundamentals.',
             questions: [
                 {
