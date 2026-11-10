@@ -601,20 +601,34 @@ jobs:
         run: |
           set -euo pipefail
 
+          node <<'NODE'
+          const { execFileSync } = require('node:child_process');
+
+          const files = execFileSync(
+            'git',
+            ['diff', '--name-only', '-z'],
+            { encoding: 'utf8' }
+          )
+            .split('\0')
+            .filter(Boolean)
+            .filter(file =>
+              /\.(js|jsx|ts|tsx|css|scss|html|md)$/i.test(file)
+            );
+
+          if (files.length > 0) {
+            execFileSync('git', ['add', '--', ...files], {
+              stdio: 'inherit'
+            });
+          }
+          NODE
+
+          if git diff --cached --quiet; then
+            echo "No source-code changes to commit."
+            exit 0
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          if git diff --quiet; then
-            echo "No changes to commit."
-            exit 0
-          fi
-
-          git add -- '*.js' '*.jsx' '*.ts' '*.tsx' '*.css' '*.scss' '*.html' '*.md'
-
-          if git diff --cached --quiet; then
-            echo "No eligible source changes to commit."
-            exit 0
-          fi
-
-          git commit -m "chore: daily AI online quiz improvement"
-          git push origin HEAD:ai-daily-updates
+          git commit -m "chore: daily AI quiz improvement"
+          git push origin ai-daily-updates
