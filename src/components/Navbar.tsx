@@ -1,10 +1,21 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
 function Navbar() {
   const navigate = useNavigate();
-  // Set to true to see Logout. Set to false to see Login and Sign Up.
-  const [loggedIn, setLoggedIn] = useState(true);
+  const [loggedIn, setLoggedIn] = useState(false);
+
+  useEffect(() => {
+    fetch('http://localhost:5000/api/auth/me', {
+      credentials: 'include',
+    })
+      .then((res) => {
+        if (res.ok) {
+          setLoggedIn(true);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   async function handleLogout() {
     await fetch('http://localhost:5000/api/auth/logout', {
