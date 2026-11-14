@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 
 function Navbar() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [loggedIn, setLoggedIn] = useState(false);
 
   useEffect(() => {
@@ -12,10 +13,14 @@ function Navbar() {
       .then((res) => {
         if (res.ok) {
           setLoggedIn(true);
+        } else {
+          setLoggedIn(false);
         }
       })
-      .catch(() => {});
-  }, []);
+      .catch(() => {
+        setLoggedIn(false);
+      });
+  }, [location.pathname]);
 
   async function handleLogout() {
     await fetch('http://localhost:5000/api/auth/logout', {
